@@ -1,80 +1,97 @@
-import firebase_admin
-from firebase_admin import credentials, db
-from flask import Flask, jsonify, request
-from flask_cors import CORS
+from flask import Flask, request, jsonify
+import mysql.connector
+import datetime
 
-# Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
 
-# Load Firebase Credentials
-cred = credentials.Certificate("firebase_credentials.json")
-firebase_admin.initialize_app(cred, {
-    'databaseURL': 'https://wildlife-poaching-alerts-default-rtdb.firebaseio.com'
-})
+# MySQL Database Configuration
+DB_CONFIG = {
+    "host": "localhost",  
+    "user": "root",
+    "password": "Pranu@143",  
+    "database": "wildlife_project"
+}
 
-# Root route
-@app.route('/')
-def home():
-    return jsonify({
-        "message": "Welcome to the Wildlife API",
-        "status": "online",
-        "version": "1.0"
-    })
-
-# Get all wildlife alerts
-@app.route('/api/alerts', methods=['GET'])
-def get_alerts():
+# Connect to MySQL and ensure the table exists
+def init_db():
     try:
-        # Reference to the Firebase database
-        ref = db.reference('alerts')
-        # Get all alerts
-        alerts = ref.get()
+        connection = mysql.connector.connect(**DB_CONFIG)
+        cursor = connection.cursor()
         
-        if alerts:
-            return jsonify(alerts)
-        else:
-            return jsonify({"message": "No alerts found"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Create table if it doesn't exist
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sensor_data (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                zone INT NOT NULL,
+                detection VARCHAR(50) NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        connection.commit()
+        cursor.close()
+        connection.close()
+        print("✅ Database initialized successfully!")
 
-# Add a new wildlife alert
-@app.route('/api/alerts', methods=['POST'])
-def add_alert():
+    except mysql.connector.Error as err:
+        print(f"❌ Database Error: {err}")
+
+# Route to receive sensor data and store in MySQL
+@app.route('/sensor_data', methods=['POST'])
+def receive_sensor_data():
     try:
-        alert_data = request.json
-        
-        # Validate required fields
-        required_fields = ['location', 'description', 'timestamp']
-        for field in required_fields:
-            if field not in alert_data:
-                return jsonify({"error": f"Missing required field: {field}"}), 400
-        
-        # Add to Firebase
-        ref = db.reference('alerts')
-        new_alert = ref.push(alert_data)
-        
-        return jsonify({
-            "message": "Alert added successfully",
-            "id": new_alert.key
-        }), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        data = request.get_json()
 
-# Get specific alert
-@app.route('/api/alerts/<alert_id>', methods=['GET'])
-def get_alert(alert_id):
+        # Validate input
+        if "zone" not in data or "detection" not in data:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        connection = mysql.connector.connect(**DB_CONFIG)
+        cursor = connection.cursor()
+
+        # Insert data into MySQL
+        query = "INSERT INTO sensor_data (zone, detection) VALUES (%s, %s)"
+        values = (data["zone"], data["detection"])
+        cursor.execute(query, values)
+        connection.commit()
+
+        cursor.close()
+        connection.close()
+
+        return jsonify({"message": "Sensor data recorded successfully", "zone": data["zone"]}), 201
+
+    except mysql.connector.Error as err:
+        return jsonify({"error": f"Database Error: {err}"}), 500
+
+# Route to fetch all sensor data
+@app.route('/get_data', methods=['GET'])
+def get_sensor_data():
     try:
-        ref = db.reference(f'alerts/{alert_id}')
-        alert = ref.get()
-        
-        if alert:
-            return jsonify(alert)
-        else:
-            return jsonify({"message": "Alert not found"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        connection = mysql.connector.connect(**DB_CONFIG)
+        cursor = connection.cursor()
 
-# Run the app if this file is executed directly
+        cursor.execute("SELECT * FROM sensor_data")
+        records = cursor.fetchall()
+
+        cursor.close()
+        connection.close()
+
+        # Format response as JSON
+        sensor_list = []
+        for row in records:
+            sensor_list.append({
+                "id": row[0],
+                "zone": row[1],
+                "detection": row[2],
+                "timestamp": row[3].strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+        return jsonify(sensor_list), 200
+
+    except mysql.connector.Error as err:
+        return jsonify({"error": f"Database Error: {err}"}), 500
+
+# Initialize the database when the app starts
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=10000)
+    init_db()
+    app.run(debug=True, host="0.0.0.0")
